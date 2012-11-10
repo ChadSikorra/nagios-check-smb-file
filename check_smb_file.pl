@@ -20,7 +20,7 @@ use strict;
 use POSIX;
 use Getopt::Long;
  
-my $VERSION    = '0.2';
+my $VERSION    = '0.3';
 my $START_TIME = time();
 
 # Some Nagios specific stuff
@@ -92,9 +92,9 @@ Usage: \t$0 -H <hostname> -f <filepath>
 This plugin tests the existence/age/size/contents of a file/folder on a SMB share.
 
     -H, --host            <Hostname>    The hostname to check (required)
-    -f, --filename        <filename>    The share and path path to the file (required)
-    -w, --warning         <value>       Warning if targeted file property exceeds value
-    -c, --critical        <value>       Critical if targeted file property exceeds value
+    -f, --filename        <filename>    The share and path to the file (required)
+    -w, --warning         <value>       Warning if file property exceeds value
+    -c, --critical        <value>       Critical if file property exceeds value
         --warning-match   <regex>       Warning if contents match regex
         --critical-match  <regex>       Critical if contents match regex
         --match-case                    Match should be case sensitive
@@ -131,26 +131,42 @@ Warning and Critical Values
     accessed | Last accessed time
     size     | Size of the file
 
+File Paths
+----------
+    File paths are checked with forward slashes. So a path to check should be entered
+    with forward slashes and not back slashes, such as...
+
+    SomeShare/some_directory/some_file.txt
+
+    However, if you enter back slashes the script will attempt to convert them to
+    forward slashes and check the resulting path. Also, you can check hidden and 
+    admin shares, such as the system drive, by using a double dollar sign in nagios
+    commands...
+
+    C\$\$/some_directory/some_file.txt
+
+    Also note that file path checks are case-insensitive.
+
 Examples
 --------
-   Check for the existence of a file called "log.txt" on the root of the C drive
+    Check for the existence of a file called "log.txt" on the root of the C drive
 
-        $0 -H fileserver -U username -P password -W domainname -f 'C\$\\log.txt'
+    $0 -H fileserver -U username -P password -W domainname -f 'C\$\$/log.txt'
 
-   Warning if the modification date is older than 5 days, critical if 10 days
+    Warning if the modification date is older than 5 days, critical if 10 days
 
-        $0 -H fileserver -U username -P password -W domainname -f 'SomeShare\\logs\\file.txt' \\
-            -w 5days -c 10days
+    $0 -H fileserver -U username -P password -W domainname -f 'Share/log/file.txt' \\
+        -w 5days -c 10days
 
-   Warning if the file size greater than 800 KB, critical greater than 2MB
+    Warning if the file size greater than 800 KB, critical greater than 2MB
 
-        $0 -H fileserver -U username -P password -W domainname -f 'C\$\\log.txt' \\
-            --property size -w 800KB -c 2MB
+    $0 -H fileserver -U username -P password -W domainname -f 'C\$\$/log.txt' \\
+        --property size -w 800KB -c 2MB
 
-   Critical if the file contains a specific pattern (regex values allowed)
+    Critical if the file contains a specific pattern (regex values allowed)
 
-        $0 -H fileserver -U username -P password -W domainname -f 'SomeShare\\logs\\file.txt' \\
-            --critical-match "^error"
+    $0 -H fileserver -U username -P password -W domainname -f 'Share/log/file.txt' \\
+        --critical-match "^error"
 EOT
 }
 
@@ -189,7 +205,7 @@ sub checkFileProperty {
     my (@file_stat) = @{(shift)};
     my ($state_check) = shift;
 
-    # Get the value we should compare after applying the specified measure (days,hours,MB,GB,etc)
+    # Get the value we should compare after applying the specified measure
     my $value_real = convertPropertyValue($value);
     my $value_unit = convertPropertyValue($value, 1);
     my $measure_type = $VALUE_PROPERTY{$FILE_PROPERTY}{'MEASURE'};
@@ -205,8 +221,13 @@ sub checkFileProperty {
     }
     elsif ($value_stat == 11 || $value_stat == 10) {
        if (($START_TIME - $file_stat[$value_stat]) > $value_real) {
-           my $readable =  sprintf("%.2f", ($START_TIME - $file_stat[$value_stat]) / $value_convert);
-           print "$state_check: File property '$FILE_PROPERTY' is ${readable} ${value_unit} old. Time for property is " . localtime($file_stat[$value_stat]) . "\n";
+           my $readable =  sprintf(
+               "%.2f",
+               ($START_TIME - $file_stat[$value_stat]) / $value_convert
+           );
+           print "$state_check: File property '$FILE_PROPERTY' is "
+               . "${readable} ${value_unit} old. "
+	       . "Time for property is " . localtime($file_stat[$value_stat]) . "\n";
            exit $ERRORS{$state_check};
        }
     }
@@ -279,7 +300,9 @@ if ($o_help) { help(); exit 0}
 if (!$o_host) { usage("Host not specified\n"); }
 if (!$o_filepath) { usage("File path not specified\n"); }
 if ($o_file_property) {
-   if (!exists $VALUE_PROPERTY{uc $o_file_property}) { usage("Invalid file property\n"); }
+   if (!exists $VALUE_PROPERTY{uc $o_file_property}) {
+       usage("Invalid file property\n");
+   }
    $FILE_PROPERTY = uc $o_file_property;
 }
 if ($o_critical and $o_warning) {
@@ -331,14 +354,16 @@ my (@fileStat) = @{ getFileStat($full_file_path, $smb) };
 
 # If we can not access the initial file/folder, throw a critical error
 if ($#fileStat == 0) {
-    print "CRITICAL: $! \n";
+    print "CRITICAL: $! ($full_file_path)\n";
     exit $ERRORS{'CRITICAL'};
 }
 
 checkFileProperty($o_critical, \@fileStat, 'CRITICAL') if ($o_critical);
 checkFileProperty($o_warning, \@fileStat,   'WARNING') if ($o_warning);
-checkFileContents($smb, $full_file_path, $o_warning_match, $o_critical_match) if ($o_warning_match || $o_critical_match);
+if ($o_warning_match || $o_critical_match) {
+    checkFileContents($smb, $full_file_path, $o_warning_match, $o_critical_match);
+}
 
 # If we made it this far then everything is OK...
-print "OK: file/directory found.\n";
+print "OK: file/directory found. ($full_file_path)\n";
 exit $ERRORS{'OK'};
