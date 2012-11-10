@@ -19,10 +19,13 @@
 use strict;
 use POSIX;
 use Getopt::Long;
-use utils qw(&usage %ERRORS);
-  
-my $VERSION    = '0.1';
+ 
+my $VERSION    = '0.2';
 my $START_TIME = time();
+
+# Some Nagios specific stuff
+my $TIMEOUT = 15;
+my %ERRORS=('OK'=> 0,'WARNING' => 1,'CRITICAL' => 2,'UNKNOWN' => 3,'DEPENDENT' => 4);
 
 # Command line option variables...
 my $o_host;
@@ -74,6 +77,12 @@ my %VALUE_MEASURE = (
         'GB' => 1073741824
     }
 );
+
+sub usage {
+    my $format=shift;
+    printf($format,@_);
+    exit $ERRORS{'UNKNOWN'};
+}
 
 # Print the usage for this script
 sub help {
@@ -296,6 +305,23 @@ defined $o_smbinit{$_} or delete $o_smbinit{$_} for keys %o_smbinit;
 # Replace any backslashes in the path for convenience...
 $o_filepath =~ s/\\/\//g;
 my $full_file_path = 'smb://' . $o_host . '/' . $o_filepath;
+
+# By default libsmbclient will attempt to create a smb.conf file in
+# the home directory as specified from the environment variable HOME. In
+# some cases this is set to /root or a directory that cannot be written
+# to. So work-around that here if needed...
+if (!$ENV{'HOME'} || ! -w $ENV{'HOME'}) {
+    $ENV{'HOME'} = '/tmp';
+}
+if (!-e "$ENV{HOME}/.smb/smb.conf") {
+    # Attempt to create a smb.conf file for libsmbclient...
+    mkdir "$ENV{HOME}/.smb", 0755 unless (-e "$ENV{HOME}/.smb");
+    if (!open(F, ">$ENV{HOME}/.smb/smb.conf")) {
+        print "Cannot create $ENV{HOME}/.smb/smb.conf: $!\n";
+        exit $ERRORS{'UNKNOWN'};
+    }
+    close(F);
+}
 
 # Create the actual SMB object to access files from the hostname specified
 my $smb = new Filesys::SmbClient(%o_smbinit);
