@@ -99,7 +99,7 @@ This plugin tests the existence/age/size/contents of a file/folder on a SMB shar
         --critical-match  <regex>       Critical if contents match regex
         --match-case                    Match should be case sensitive
     -p, --property        <property>    The property to test (Default: modified)
-    -f, --kerberos                      Use Kerberos for authentication
+    -K, --kerberos                      Use Kerberos for authentication
     -U, --username        <Username>    The username to connect with
     -P, --password        <Password>    The password to authenticate with
     -W, --workgroup       <Workgroup>   The workgroup the username is located in
