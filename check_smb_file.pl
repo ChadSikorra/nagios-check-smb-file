@@ -126,21 +126,21 @@ Examples
 --------
    Check for the existence of a file called "log.txt" on the root of the C drive
 
-        $0 -H fileserver -U username -P password -W domainname -p 'C\$\\log.txt'
+        $0 -H fileserver -U username -P password -W domainname -f 'C\$\\log.txt'
 
    Warning if the modification date is older than 5 days, critical if 10 days
 
-        $0 -H fileserver -U username -P password -W domainname -p 'SomeShare\\logs\\file.txt' \\
+        $0 -H fileserver -U username -P password -W domainname -f 'SomeShare\\logs\\file.txt' \\
             -w 5days -c 10days
 
    Warning if the file size greater than 800 KB, critical greater than 2MB
 
-        $0 -H fileserver -U username -P password -W domainname -p 'C\$\\log.txt' \\
+        $0 -H fileserver -U username -P password -W domainname -f 'C\$\\log.txt' \\
             --property size -w 800KB -c 2MB
 
    Critical if the file contains a specific pattern (regex values allowed)
 
-        $0 -H fileserver -U username -P password -W domainname -p 'SomeShare\\logs\\file.txt' \\
+        $0 -H fileserver -U username -P password -W domainname -f 'SomeShare\\logs\\file.txt' \\
             --critical-match "^error"
 EOT
 }
