@@ -20,14 +20,21 @@ use strict;
 use POSIX;
 use Getopt::Long;
  
-my $VERSION    = '0.3';
+#####################################################################################
+### Variable Declarations
+#####################################################################################
+my $VERSION    = '0.4';
 my $START_TIME = time();
 
+#------------------------------------------------------------------------------------
 # Some Nagios specific stuff
+#------------------------------------------------------------------------------------
 my $TIMEOUT = 15;
 my %ERRORS=('OK'=> 0,'WARNING' => 1,'CRITICAL' => 2,'UNKNOWN' => 3,'DEPENDENT' => 4);
 
-# Command line option variables...
+#------------------------------------------------------------------------------------
+# Command line option variables
+#------------------------------------------------------------------------------------
 my $o_host;
 my $o_username;
 my $o_password;
@@ -39,10 +46,23 @@ my $o_critical;
 my $o_warning_match;
 my $o_critical_match;
 my $o_match_case;
-my $o_help;
 my $o_smbflag_kerberos;
+my $o_no_data;
 my $o_debug = 0;
 my %o_smbinit = ();
+
+#------------------------------------------------------------------------------------
+# Variables and table info data used in subs and main script execution
+#------------------------------------------------------------------------------------
+
+# The critical and warining values split into distict pieces
+my ($critical_value, $critical_uom, $warning_value, $warning_uom);
+
+# Store relevant performance data here as the script progresses
+my %PERF_DATA = ();
+
+# If a warning/critical value is matched during execution, store the state here
+my $ERROR_STATE;
 
 # The default property to test for
 my $FILE_PROPERTY = 'MODIFIED';
@@ -50,16 +70,22 @@ my $FILE_PROPERTY = 'MODIFIED';
 # Valid file properties to test
 my %VALUE_PROPERTY = (
     'SIZE' => {
-        'STAT'    => 7,
-        'MEASURE' => 'SIZE'
+        'STAT'        => 7,
+        'MEASURE'     => 'SIZE',
+        'LABEL'       => 'size',
+        'DEFAULT_UOM' => 'MB'
     },
     'ACCESSED' => {
-        'STAT'    => 10,
-        'MEASURE' => 'TIME'
+        'STAT'        => 10,
+        'MEASURE'     => 'TIME',
+        'LABEL'       => 'lastAccessed',
+        'DEFAULT_UOM' => 'DAYS'
     },
     'MODIFIED' => {
-        'STAT'    => 11,
-        'MEASURE' => 'TIME'
+        'STAT'        => 11,
+        'MEASURE'     => 'TIME',
+        'LABEL'       => 'lastModified',
+        'DEFAULT_UOM' => 'DAYS'
     }
 );
 
@@ -78,13 +104,22 @@ my %VALUE_MEASURE = (
     }
 );
 
+#####################################################################################
+### Begin Subroutines 
+#####################################################################################
+
+#------------------------------------------------------------------------------------
+# From Nagios utils. Prints a message on incorrect script usage
+#------------------------------------------------------------------------------------
 sub usage {
     my $format=shift;
     printf($format,@_);
     exit $ERRORS{'UNKNOWN'};
 }
 
-# Print the usage for this script
+#------------------------------------------------------------------------------------
+# Print the usage information for this script
+#------------------------------------------------------------------------------------
 sub help {
     print <<EOT
 Usage: \t$0 -H <hostname> -f <filepath>
@@ -104,6 +139,7 @@ This plugin tests the existence/age/size/contents of a file/folder on a SMB shar
     -P, --password        <Password>    The password to authenticate with
     -W, --workgroup       <Workgroup>   The workgroup the username is located in
     -K, --kerberos                      Use Kerberos for authentication
+    -n, --no-data                       Do not collect performance data
     -d, --debug           <0-10>        Set the debug level for libsmbclient
     -V, --version                       Display the version of this script and exit
     -h, --help                          Display this usage screen and exit
@@ -170,102 +206,198 @@ Examples
 EOT
 }
 
-# Given the value entered as a warning or critical value, determine the value to
-# convert it to depending on the file propety and measure given
+#------------------------------------------------------------------------------------
+# Convert an entered value to the value needed for the file property
+#------------------------------------------------------------------------------------
 sub convertPropertyValue {
-    my ($time_unit) = $_[0];
-    my $return_value_unit = defined $_[1]; 
-    my $stat_position;
-    my $unit;
-    $time_unit =~ /^([0-9]+)([A-Za-z]+)?$/;
-
+    my ($value_entered, $uom) = @_;
     my $measure_type = $VALUE_PROPERTY{$FILE_PROPERTY}{'MEASURE'};
 
-    if (defined $2 and !exists $VALUE_MEASURE{$measure_type}{uc $2}) {
-        usage("Invalid time/size measure '$2' for property '$FILE_PROPERTY'\n");
-    }
-
-    if ($FILE_PROPERTY eq 'MODIFIED' || $FILE_PROPERTY eq 'ACCESSED') {
-        $unit = defined $2 ? uc $2 : 'DAYS';
-    }
-    elsif ($FILE_PROPERTY eq 'SIZE') {
-        $unit = defined $2 ? uc $2 : 'MB';
-    }
-
-    if ($return_value_unit) {
-        return $unit;
-    }
-
-    return $VALUE_MEASURE{$measure_type}{$unit} * $1;
+    return $VALUE_MEASURE{$measure_type}{$uom} * $value_entered;
 }
 
+#------------------------------------------------------------------------------------
+# Split an entered critical/warning value into its distinct parts: The value and UOM
+#------------------------------------------------------------------------------------
+sub splitPropertyValue {
+    my $full_value = shift;
+    my $measure_type = $VALUE_PROPERTY{$FILE_PROPERTY}{'MEASURE'};
+    my $unit;
+
+    $full_value =~ /^([0-9]+)([A-Za-z]+)?$/;
+    if (!defined $1) {
+        usage("Invalid value '$full_value'\n");
+    }
+    if (defined $2 and !exists $VALUE_MEASURE{$measure_type}{uc $2}) {
+        usage("Invalid measure '$2' for property '$FILE_PROPERTY'\n");
+    }
+    $unit = defined $2 ? uc $2 : $VALUE_PROPERTY{$FILE_PROPERTY}{'DEFAULT_UOM'};
+
+    return ($1, $unit);
+}
+
+#------------------------------------------------------------------------------------
 # Check a file stat property for a specified value
-sub checkFileProperty {
+#------------------------------------------------------------------------------------
+sub checkFilePropertyValue {
     my ($value) = shift;
+    my ($uom) = shift;
     my (@file_stat) = @{(shift)};
-    my ($state_check) = shift;
+    my $output;
 
     # Get the value we should compare after applying the specified measure
-    my $value_real = convertPropertyValue($value);
-    my $value_unit = convertPropertyValue($value, 1);
+    my $value_real = convertPropertyValue($value, $uom);
     my $measure_type = $VALUE_PROPERTY{$FILE_PROPERTY}{'MEASURE'};
-    my $value_convert = $VALUE_MEASURE{$measure_type}{$value_unit};
+    my $value_convert = $VALUE_MEASURE{$measure_type}{$uom};
     my $value_stat = $VALUE_PROPERTY{$FILE_PROPERTY}{'STAT'};
 
     if ($value_stat == 7) {
-       if ($file_stat[7] > $value_real) {
-           my $readable =  sprintf("%.2f", $file_stat[7] / $value_convert);
-           print "$state_check: File size ${readable}${value_unit}\n";
-           exit $ERRORS{$state_check};
-       }
+        if ($file_stat[7] > $value_real) {
+            my $readable =  sprintf("%.2f", $file_stat[7] / $value_convert);
+            $output = "File size ${readable}${uom}";
+        }
     }
     elsif ($value_stat == 11 || $value_stat == 10) {
-       if (($START_TIME - $file_stat[$value_stat]) > $value_real) {
-           my $readable =  sprintf(
-               "%.2f",
-               ($START_TIME - $file_stat[$value_stat]) / $value_convert
-           );
-           print "$state_check: File property '$FILE_PROPERTY' is "
-               . "${readable} ${value_unit} old. "
-	       . "Time for property is " . localtime($file_stat[$value_stat]) . "\n";
-           exit $ERRORS{$state_check};
+        if (($START_TIME - $file_stat[$value_stat]) > $value_real) {
+            my $readable =  sprintf(
+                "%.2f",
+                ($START_TIME - $file_stat[$value_stat]) / $value_convert
+            );
+            $output = "File property '$FILE_PROPERTY' is ${readable} ${uom} old. "
+	            . "Time for property is " . localtime($file_stat[$value_stat]) . "'";
        }
     }
+
+    return $output;
 }
 
+#------------------------------------------------------------------------------------
 # Read a file over SMB and check its contents for any patterns
+#------------------------------------------------------------------------------------
 sub checkFileContents {
     my $smb = shift;
     my $filepath = shift;
     my $warning_match = shift;
     my $critical_match = shift;
+    my $output;
 
     my $fd = $smb->open($filepath, '0666');
     while (defined(my $line = $smb->read($fd, 1024))) {
         last if $line eq '';
-        checkFileForPattern($line, $critical_match,'CRITICAL') if ($critical_match);
-        checkFileForPattern($line, $warning_match,'WARNING') if ($warning_match);
+        if ($critical_match and checkFileForPattern($line, $critical_match)) {
+            $output = "File matches pattern [[ $critical_match ]]";
+            $ERROR_STATE = 'CRITICAL';
+            last;
+        }
+        if ($warning_match and checkFileForPattern($line, $warning_match)) {
+            $output = "File matches pattern [[ $warning_match ]]";
+            $ERROR_STATE = 'WARNING';
+            last;
+        }
     }
     $smb->close($fd);
+
+    return $output;
 }
 
+#------------------------------------------------------------------------------------
 # Given data from a file, check it for a pattern
+#------------------------------------------------------------------------------------
 sub checkFileForPattern {
     my $line = shift;
     my $pattern = shift;
-    my $state = shift;
 
     if ($o_match_case and $line =~ m/$pattern/) {
-       print "$state: File matches pattern [[ $pattern ]]\n";
-       exit $ERRORS{$state};
+        return 1
     }
     elsif (!$o_match_case and $line =~ m/$pattern/i) {
-       print "$state: File matches pattern [[ $pattern ]]\n";
-       exit $ERRORS{$state};
+        return 1;
     }
+
+    return 0;
 }
 
+#------------------------------------------------------------------------------------
+# Print the plugin output and exit with the correct status
+#------------------------------------------------------------------------------------
+sub showOutputAndExit {
+    my $output = "$ERROR_STATE: " . $_[0];
+
+    if (keys %PERF_DATA) {
+        $output .= '|';
+        while (my ($key, $value) = each(%PERF_DATA)) {
+            $output .= "'" . $$value{'LABEL'} . "'=" . $$value{'VALUE'}
+             . $$value{'UOM'} . ';' . $$value{'WARN'} . ';' . $$value{'CRIT'} . ";;";
+        }
+    }
+    print $output . "\n";
+
+    exit $ERRORS{$ERROR_STATE};
+}
+
+#------------------------------------------------------------------------------------
+# Determine the default UOM to use for performance data
+#------------------------------------------------------------------------------------
+sub determineDefaultUom {
+    my $warn_uom = shift;
+    my $crit_uom = shift;
+    my $measure_type = $VALUE_PROPERTY{$FILE_PROPERTY}{'MEASURE'};
+    my $uom;
+
+    if ($warn_uom and $crit_uom) {
+        my $warn_uom_conversion = $VALUE_MEASURE{$measure_type}{$warn_uom};
+        my $crit_uom_conversion = $VALUE_MEASURE{$measure_type}{$crit_uom};
+        $uom = ($crit_uom_conversion > $warn_uom_conversion) ? $crit_uom : $warn_uom;
+    }
+    elsif ($warn_uom || $crit_uom) {
+        $uom = $crit_uom ? $crit_uom : $warn_uom;
+    }
+    else {
+        $uom = $VALUE_PROPERTY{$FILE_PROPERTY}{'DEFAULT_UOM'};
+    }
+
+    return $uom;
+}
+
+#------------------------------------------------------------------------------------
+# Configure preformance data for output if specified
+#------------------------------------------------------------------------------------
+sub getPerformanceDataForProperty {
+    my $warning_value  = shift;
+    my $warning_uom    = shift;
+    my $critical_value = shift;
+    my $critical_uom   = shift;
+    my (@file_stat) = @{(shift)};
+    my %perf_data = (
+       'WARN'  => '',
+       'CRIT'  => '',
+       'LABEL' => '',
+       'VALUE' => '',
+       'UOM'   => ''
+    );
+
+    my $default_uom = determineDefaultUom($warning_uom, $critical_uom);
+    $perf_data{'UOM'} = $default_uom;
+    if ($FILE_PROPERTY eq 'SIZE') {
+        $perf_data{'VALUE'} = sprintf("%.2f", $file_stat[7] / $VALUE_MEASURE{'SIZE'}{$default_uom});
+        $perf_data{'WARN'}  = sprintf("%.2f", convertPropertyValue($warning_value, $warning_uom) / $VALUE_MEASURE{'SIZE'}{$default_uom}) if $warning_value;
+        $perf_data{'CRIT'}  = sprintf("%.2f", convertPropertyValue($critical_value, $critical_uom) / $VALUE_MEASURE{'SIZE'}{$default_uom}) if $critical_value;
+    }
+    elsif ($FILE_PROPERTY eq 'MODIFIED' || $FILE_PROPERTY eq 'ACCESSED') {
+        my $value_stat = $VALUE_PROPERTY{$FILE_PROPERTY}{'STAT'};
+        $perf_data{'VALUE'} = sprintf("%.2f", ($START_TIME - $file_stat[$value_stat]) / $VALUE_MEASURE{'TIME'}{$default_uom});
+        $perf_data{'WARN'}  = sprintf("%.2f", convertPropertyValue($warning_value, $warning_uom) / $VALUE_MEASURE{'TIME'}{$default_uom}) if $warning_value;
+        $perf_data{'CRIT'}  = sprintf("%.2f", convertPropertyValue($critical_value, $critical_uom) / $VALUE_MEASURE{'TIME'}{$default_uom}) if $critical_value;
+        $perf_data{'UOM'}   = ($default_uom eq 'SECONDS') ? 's' : '';
+    }
+    $perf_data{'LABEL'} = $VALUE_PROPERTY{$FILE_PROPERTY}{'LABEL'};
+
+    return \%perf_data
+}
+
+#------------------------------------------------------------------------------------
 # Return the list of property values from a stat of a file
+#------------------------------------------------------------------------------------
 sub getFileStat {
     my $filepath = shift;
     my $smb = shift;
@@ -275,38 +407,45 @@ sub getFileStat {
     return \@filestat;
 }
 
-# Parse command line options...
+#####################################################################################
+### Command Line Option Configuration
+#####################################################################################
 Getopt::Long::Configure ("bundling");
 GetOptions(
-  'p|property=s'     => \$o_file_property,
-  'f|filename=s'     => \$o_filepath,
-  'w|warning=s'      => \$o_warning,
-  'c|critical=s'     => \$o_critical,
-  'warning-match=s'  => \$o_warning_match,
-  'critical-match=s' => \$o_critical_match,
-  'match-case'       => \$o_match_case,
-  'H|host=s'         => \$o_host,
-  'K|kerberos'       => \$o_smbflag_kerberos,
-  'W|workgroup=s'    => \$o_smbinit{'workgroup'},
-  'U|username=s'     => \$o_smbinit{'username'},
-  'P|password=s'     => \$o_smbinit{'password'},
-  'd|debug=i'        => \$o_smbinit{'debug'},
-  'h|help'           => \$o_help,
-  'V|version'        => sub { print "$VERSION\n"; exit 0; }
+    'p|property=s'     => \$o_file_property,
+    'f|filename=s'     => \$o_filepath,
+    'n|no-data'        => \$o_no_data,
+    'w|warning=s'      => \$o_warning,
+    'c|critical=s'     => \$o_critical,
+    'warning-match=s'  => \$o_warning_match,
+    'critical-match=s' => \$o_critical_match,
+    'match-case'       => \$o_match_case,
+    'H|host=s'         => \$o_host,
+    'K|kerberos'       => \$o_smbflag_kerberos,
+    'W|workgroup=s'    => \$o_smbinit{'workgroup'},
+    'U|username=s'     => \$o_smbinit{'username'},
+    'P|password=s'     => \$o_smbinit{'password'},
+    'd|debug=i'        => \$o_smbinit{'debug'},
+    'h|help'           => sub { help(); exit 0; },
+    'V|version'        => sub { print "$VERSION\n"; exit 0; }
 );
-if ($o_help) { help(); exit 0}
 
-# Some mandatory option checks
+#####################################################################################
+### Pre-Execution Checks
+#####################################################################################
 if (!$o_host) { usage("Host not specified\n"); }
 if (!$o_filepath) { usage("File path not specified\n"); }
 if ($o_file_property) {
-   if (!exists $VALUE_PROPERTY{uc $o_file_property}) {
-       usage("Invalid file property\n");
-   }
-   $FILE_PROPERTY = uc $o_file_property;
+    if (!exists $VALUE_PROPERTY{uc $o_file_property}) {
+        usage("Invalid file property\n");
+    }
+    $FILE_PROPERTY = uc $o_file_property;
 }
+($critical_value, $critical_uom) = splitPropertyValue($o_critical) if ($o_critical);
+($warning_value,   $warning_uom) = splitPropertyValue($o_warning) if ($o_warning);
 if ($o_critical and $o_warning) {
-    if (convertPropertyValue($o_critical) <= convertPropertyValue($o_warning)) {
+    if (convertPropertyValue($critical_value, $critical_uom) <= convertPropertyValue($warning_value, $warning_uom)) {
+        print "--$critical_value -- $warning_value --";
         usage("The warning value must be less than the critical value\n"); 
     }
 }
@@ -317,10 +456,11 @@ eval {
     Filesys::SmbClient->import;
 };
 if ( $@ ) {
-    print "Missing Perl module Filesys::SmbClient\n";
-    exit $ERRORS{'UNKNOWN'};
+    $ERROR_STATE = 'UNKNOWN';
+    showOutputAndExit("Missing Perl module Filesys::SmbClient");
 }
 use Filesys::SmbClient 'SMB_CTX_FLAG_USE_KERBEROS';
+
 
 # Cleanup the SmbClient init hash...
 defined $o_smbinit{$_} or delete $o_smbinit{$_} for keys %o_smbinit;
@@ -340,13 +480,15 @@ if (!-e "$ENV{HOME}/.smb/smb.conf") {
     # Attempt to create a smb.conf file for libsmbclient...
     mkdir "$ENV{HOME}/.smb", 0755 unless (-e "$ENV{HOME}/.smb");
     if (!open(F, ">$ENV{HOME}/.smb/smb.conf")) {
-        print "Cannot create $ENV{HOME}/.smb/smb.conf: $!\n";
-        exit $ERRORS{'UNKNOWN'};
+        $ERROR_STATE = 'UNKNOWN';
+        showOutputAndExit("Cannot create $ENV{HOME}/.smb/smb.conf: $!");
     }
     close(F);
 }
 
-# Create the actual SMB object to access files from the hostname specified
+#####################################################################################
+### Execute Main Plugin Checks
+#####################################################################################
 my $smb = new Filesys::SmbClient(%o_smbinit);
 $smb->set_flag(SMB_CTX_FLAG_USE_KERBEROS) if ($o_smbflag_kerberos);
 
@@ -354,16 +496,32 @@ my (@fileStat) = @{ getFileStat($full_file_path, $smb) };
 
 # If we can not access the initial file/folder, throw a critical error
 if ($#fileStat == 0) {
-    print "CRITICAL: $! ($full_file_path)\n";
-    exit $ERRORS{'CRITICAL'};
+    $ERROR_STATE = 'CRITICAL';
+    showOutputAndExit("$! ($full_file_path)");
 }
 
-checkFileProperty($o_critical, \@fileStat, 'CRITICAL') if ($o_critical);
-checkFileProperty($o_warning, \@fileStat,   'WARNING') if ($o_warning);
-if ($o_warning_match || $o_critical_match) {
-    checkFileContents($smb, $full_file_path, $o_warning_match, $o_critical_match);
+# Collect and process performance data unless told otherwise
+if (!$o_no_data) {
+    $PERF_DATA{$o_filepath} = getPerformanceDataForProperty(
+        $warning_value, $warning_uom,
+        $critical_value, $critical_uom,
+        \@fileStat
+    );
+}
+
+if ($o_critical and my $output = checkFilePropertyValue($critical_value, $critical_uom, \@fileStat)) {
+    $ERROR_STATE = 'CRITICAL';
+    showOutputAndExit($output);
+}
+if ($o_warning and my $output = checkFilePropertyValue($warning_value, $warning_uom, \@fileStat)) {
+    $ERROR_STATE = 'WARNING';
+    showOutputAndExit($output);
+}
+
+if (($o_warning_match || $o_critical_match) and my $output = checkFileContents($smb, $full_file_path, $o_warning_match, $o_critical_match)) {
+    showOutputAndExit($output);
 }
 
 # If we made it this far then everything is OK...
-print "OK: file/directory found. ($full_file_path)\n";
-exit $ERRORS{'OK'};
+$ERROR_STATE = 'OK';
+showOutputAndExit("file/directory found. ($full_file_path)");
