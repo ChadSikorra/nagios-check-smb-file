@@ -19,7 +19,7 @@
 use strict;
 use POSIX;
 use Getopt::Long;
- 
+
 #####################################################################################
 ### Variable Declarations
 #####################################################################################
@@ -264,7 +264,7 @@ sub checkFilePropertyValue {
                 ($START_TIME - $file_stat[$value_stat]) / $value_convert
             );
             $output = "File property '$FILE_PROPERTY' is ${readable} ${uom} old. "
-	            . "Time for property is " . localtime($file_stat[$value_stat]) . "'";
+                . "Time for property is " . localtime($file_stat[$value_stat]) . "'";
        }
     }
 
@@ -445,7 +445,6 @@ if ($o_file_property) {
 ($warning_value,   $warning_uom) = splitPropertyValue($o_warning) if ($o_warning);
 if ($o_critical and $o_warning) {
     if (convertPropertyValue($critical_value, $critical_uom) <= convertPropertyValue($warning_value, $warning_uom)) {
-        print "--$critical_value -- $warning_value --";
         usage("The warning value must be less than the critical value\n"); 
     }
 }
@@ -460,7 +459,6 @@ if ( $@ ) {
     showOutputAndExit("Missing Perl module Filesys::SmbClient");
 }
 use Filesys::SmbClient 'SMB_CTX_FLAG_USE_KERBEROS';
-
 
 # Cleanup the SmbClient init hash...
 defined $o_smbinit{$_} or delete $o_smbinit{$_} for keys %o_smbinit;
