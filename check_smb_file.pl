@@ -66,9 +66,6 @@ my ($critical_value, $critical_uom, $warning_value, $warning_uom);
 # Store relevant performance data here as the script progresses
 my %PERF_DATA = ();
 
-# If a warning/critical value is matched during execution, store the state here
-my $ERROR_STATE;
-
 # The default property to test for
 my $FILE_PROPERTY = 'MODIFIED';
 
