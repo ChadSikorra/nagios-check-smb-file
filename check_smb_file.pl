@@ -23,7 +23,7 @@ use Getopt::Long;
 #####################################################################################
 ### Variable Declarations
 #####################################################################################
-my $VERSION    = '0.4';
+my $VERSION    = '0.5';
 my $START_TIME = time();
 
 #------------------------------------------------------------------------------------
@@ -45,6 +45,11 @@ my $o_warning;
 my $o_critical;
 my $o_warning_match;
 my $o_critical_match;
+my $o_warning_files;
+my $o_critical_files;
+my $o_filename_match;
+my $o_expand_datetime;
+my $o_mode_directory;
 my $o_match_case;
 my $o_smbflag_kerberos;
 my $o_no_data;
@@ -126,18 +131,21 @@ Usage: \t$0 -H <hostname> -f <filepath>
 
 This plugin tests the existence/age/size/contents of a file/folder on a SMB share.
 
-    -H, --host            <Hostname>    The hostname to check (required)
-    -f, --filename        <filename>    The share and path to the file (required)
+    -H, --host            <hostname>    The hostname to check (required)
+    -f, --filename        <filename>    The share and path to the file/directory (required)
+    -F  --filename-match  <regex>       Only check filenames matching this regex
+    -D  --mode-directory                Treat the filename to check as a directory
     -w, --warning         <value>       Warning if file property exceeds value
     -c, --critical        <value>       Critical if file property exceeds value
-        --warning-match   <regex>       Warning if contents match regex
-        --critical-match  <regex>       Critical if contents match regex
-        --match-case                    Match should be case sensitive
+    -m, --warning-match   <regex>       Warning if contents match regex
+    -M, --critical-match  <regex>       Critical if contents match regex
+    -t, --warning-files   <value>       Warning if the total files detected exceeds value
+    -T, --critical-files  <value>       Critical if the total files detected exceeds value
     -p, --property        <property>    The property to test (Default: modified)
     -K, --kerberos                      Use Kerberos for authentication
-    -U, --username        <Username>    The username to connect with
-    -P, --password        <Password>    The password to authenticate with
-    -W, --workgroup       <Workgroup>   The workgroup the username is located in
+    -U, --username        <username>    The username to connect with
+    -P, --password        <password>    The password to authenticate with
+    -W, --workgroup       <workgroup>   The workgroup the username is located in
     -K, --kerberos                      Use Kerberos for authentication
     -n, --no-data                       Do not collect performance data
     -d, --debug           <0-10>        Set the debug level for libsmbclient
@@ -279,6 +287,7 @@ sub checkFileContents {
     my $filepath = shift;
     my $warning_match = shift;
     my $critical_match = shift;
+    my $check_state = 'OK';
     my $output;
 
     my $fd = $smb->open($filepath, '0666');
@@ -286,18 +295,18 @@ sub checkFileContents {
         last if $line eq '';
         if ($critical_match and checkFileForPattern($line, $critical_match)) {
             $output = "File matches pattern [[ $critical_match ]]";
-            $ERROR_STATE = 'CRITICAL';
+            $check_state = 'CRITICAL';
             last;
         }
         if ($warning_match and checkFileForPattern($line, $warning_match)) {
             $output = "File matches pattern [[ $warning_match ]]";
-            $ERROR_STATE = 'WARNING';
+            $check_state = 'WARNING';
             last;
         }
     }
     $smb->close($fd);
 
-    return $output;
+    return ($output, $check_state);
 }
 
 #------------------------------------------------------------------------------------
@@ -321,7 +330,8 @@ sub checkFileForPattern {
 # Print the plugin output and exit with the correct status
 #------------------------------------------------------------------------------------
 sub showOutputAndExit {
-    my $output = "$ERROR_STATE: " . $_[0];
+    my $error_state = $_[1];
+    my $output = "$error_state: " . $_[0];
 
     if (keys %PERF_DATA) {
         $output .= '|';
@@ -332,7 +342,7 @@ sub showOutputAndExit {
     }
     print $output . "\n";
 
-    exit $ERRORS{$ERROR_STATE};
+    exit $ERRORS{$error_state};
 }
 
 #------------------------------------------------------------------------------------
@@ -412,22 +422,27 @@ sub getFileStat {
 #####################################################################################
 Getopt::Long::Configure ("bundling");
 GetOptions(
-    'p|property=s'     => \$o_file_property,
-    'f|filename=s'     => \$o_filepath,
-    'n|no-data'        => \$o_no_data,
-    'w|warning=s'      => \$o_warning,
-    'c|critical=s'     => \$o_critical,
-    'warning-match=s'  => \$o_warning_match,
-    'critical-match=s' => \$o_critical_match,
-    'match-case'       => \$o_match_case,
-    'H|host=s'         => \$o_host,
-    'K|kerberos'       => \$o_smbflag_kerberos,
-    'W|workgroup=s'    => \$o_smbinit{'workgroup'},
-    'U|username=s'     => \$o_smbinit{'username'},
-    'P|password=s'     => \$o_smbinit{'password'},
-    'd|debug=i'        => \$o_smbinit{'debug'},
-    'h|help'           => sub { help(); exit 0; },
-    'V|version'        => sub { print "$VERSION\n"; exit 0; }
+    'p|property=s'       => \$o_file_property,
+    'f|filename=s'       => \$o_filepath,
+    'n|no-data'          => \$o_no_data,
+    'w|warning=s'        => \$o_warning,
+    'c|critical=s'       => \$o_critical,
+    'm|warning-match=s'  => \$o_warning_match,
+    'M|critical-match=s' => \$o_critical_match,
+    't|warning-files=s'  => \$o_warning_files,
+    'T|critical-files=s' => \$o_critical_files,
+    'F|filename-match=s' => \$o_filename_match,
+    'e|expand-datetime'  => \$o_expand_datetime,
+    'C|match-case'       => \$o_match_case,
+    'D|mode-directory'   => \$o_mode_directory,
+    'H|host=s'           => \$o_host,
+    'K|kerberos'         => \$o_smbflag_kerberos,
+    'W|workgroup=s'      => \$o_smbinit{'workgroup'},
+    'U|username=s'       => \$o_smbinit{'username'},
+    'P|password=s'       => \$o_smbinit{'password'},
+    'd|debug=i'          => \$o_smbinit{'debug'},
+    'h|help'             => sub { help(); exit 0; },
+    'V|version'          => sub { print "$VERSION\n"; exit 0; }
 );
 
 #####################################################################################
@@ -448,6 +463,20 @@ if ($o_critical and $o_warning) {
         usage("The warning value must be less than the critical value\n"); 
     }
 }
+if (($o_critical_files || $o_warning_files) and (!$o_filename_match || !$o_mode_directory)) {
+    usage("Checking for total files requires --filename-match --mode-directory\n"); 
+}
+if ($o_critical_files and $o_warning_files) {
+    if ($o_critical_files <= $o_warning_files) {
+        usage("The files warning value must be less than the files critical value\n"); 
+    }
+}
+
+# Expand DateTime variables if the switch is enabled
+$o_filename_match = ($o_filename_match and $o_expand_datetime) ?
+    POSIX::strftime($o_filename_match, localtime) : $o_filename_match;
+$o_filepath = ($o_expand_datetime) ?
+    POSIX::strftime($o_filepath, localtime) : $o_filepath;
 
 # Gracefully test for the Filesys::SmbClient module...
 eval {
@@ -455,8 +484,7 @@ eval {
     Filesys::SmbClient->import;
 };
 if ( $@ ) {
-    $ERROR_STATE = 'UNKNOWN';
-    showOutputAndExit("Missing Perl module Filesys::SmbClient");
+    showOutputAndExit("Missing Perl module Filesys::SmbClient",'UNKNOWN');
 }
 use Filesys::SmbClient 'SMB_CTX_FLAG_USE_KERBEROS';
 
@@ -478,8 +506,7 @@ if (!-e "$ENV{HOME}/.smb/smb.conf") {
     # Attempt to create a smb.conf file for libsmbclient...
     mkdir "$ENV{HOME}/.smb", 0755 unless (-e "$ENV{HOME}/.smb");
     if (!open(F, ">$ENV{HOME}/.smb/smb.conf")) {
-        $ERROR_STATE = 'UNKNOWN';
-        showOutputAndExit("Cannot create $ENV{HOME}/.smb/smb.conf: $!");
+        showOutputAndExit("Cannot create $ENV{HOME}/.smb/smb.conf: $!",'UNKNOWN');
     }
     close(F);
 }
@@ -493,33 +520,120 @@ $smb->set_flag(SMB_CTX_FLAG_USE_KERBEROS) if ($o_smbflag_kerberos);
 my (@fileStat) = @{ getFileStat($full_file_path, $smb) };
 
 # If we can not access the initial file/folder, throw a critical error
-if ($#fileStat == 0) {
-    $ERROR_STATE = 'CRITICAL';
-    showOutputAndExit("$! ($full_file_path)");
-}
+showOutputAndExit("$! ($full_file_path)",'CRITICAL') if ($#fileStat == 0);
 
-# Collect and process performance data unless told otherwise
-if (!$o_no_data) {
-    $PERF_DATA{$o_filepath} = getPerformanceDataForProperty(
-        $warning_value, $warning_uom,
-        $critical_value, $critical_uom,
-        \@fileStat
-    );
-}
+my $final_ok_message = '';
 
-if ($o_critical and my $output = checkFilePropertyValue($critical_value, $critical_uom, \@fileStat)) {
-    $ERROR_STATE = 'CRITICAL';
-    showOutputAndExit($output);
-}
-if ($o_warning and my $output = checkFilePropertyValue($warning_value, $warning_uom, \@fileStat)) {
-    $ERROR_STATE = 'WARNING';
-    showOutputAndExit($output);
-}
+# Folder context mode if any of these are true...
+if ($o_filename_match || $o_mode_directory) {
+    my $fd;
+    my %directory_files = ();
+    my (@critical_matches, @warning_matches) = ();
+    my (@critical_errors, @warning_errors) = ();
 
-if (($o_warning_match || $o_critical_match) and my $output = checkFileContents($smb, $full_file_path, $o_warning_match, $o_critical_match)) {
-    showOutputAndExit($output);
+    # The checks are only valid if the path is a directory and is readable
+    if (!($fd = $smb->opendir($full_file_path))) {
+        showOutputAndExit("$! ($full_file_path)",'CRITICAL');
+    }
+    foreach my $filename ($smb->readdir($fd)) {
+        if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
+            my $full_filename = "$full_file_path/$filename";
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (($o_filename_match and $o_match_case) and $filename =~ m/$o_filename_match/) {
+            my $full_filename = "$full_file_path/$filename";
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+    }
+    while (my ($key, $value) = each(%directory_files)) {
+        if ($o_critical and my $c_output = checkFilePropertyValue($critical_value, $critical_uom, $value)) {
+            push(@critical_errors, $key);
+        }
+        elsif ($o_warning and my $w_output = checkFilePropertyValue($warning_value, $warning_uom, $value)) {
+            push(@warning_errors, $key);
+        }
+        if ($o_warning_match || $o_critical_match) {
+            my ($match_output, $check_state) = checkFileContents(
+                $smb,
+                'smb://' . $o_host . '/' . $key,
+                $o_warning_match,
+                $o_critical_match
+            );
+            if ($match_output and $check_state eq 'CRITICAL') {
+                push(@critical_matches,$key);
+            }
+            elsif ($match_output and $check_state eq 'WARNING') {
+                push(@warning_matches,$key);
+            }
+        }
+        if (!$o_no_data) {
+            $PERF_DATA{$key} = getPerformanceDataForProperty(
+                $warning_value, $warning_uom,
+                $critical_value, $critical_uom,
+                $value
+            );
+        }
+    }
+    $smb->close($fd);
+    if (scalar keys %directory_files == 0) {
+        showOutputAndExit("No files found",'CRITICAL');
+    }
+    if (scalar @critical_errors || scalar @warning_errors) {
+        showOutputAndExit(
+            scalar @critical_errors . " files are critical, " .
+            scalar @warning_errors . " files with warnings. " .
+            (keys %directory_files) . ' files checked.',
+            ((scalar @critical_errors > scalar @warning_errors) ? 'CRITICAL' : 'WARNING')
+        );
+    }
+    if (scalar @critical_matches || scalar @warning_matches) {
+        showOutputAndExit(
+            scalar @critical_matches . " files match the critical patttern, " .
+            scalar @warning_matches . " files match the warning pattern. " .
+            (keys %directory_files) . ' files checked.',
+            ((scalar @critical_matches > scalar @warning_matches) ? 'CRITICAL' : 'WARNING')
+        );
+    }
+    if ($o_critical_files || $o_warning_files) {
+        if ($o_critical_files and scalar keys %directory_files >= $o_critical_files) { 
+            showOutputAndExit("Total files found: " . (keys %directory_files),'CRITICAL');
+        }
+        if ($o_warning_files and scalar keys %directory_files >= $o_warning_files) { 
+            showOutputAndExit("Total files found: " . (keys %directory_files),'WARNING');
+        }
+    }
+    $final_ok_message = 'Directory found. ' . (keys %directory_files) . ' files checked. '
+        . "($o_filepath)";
+}
+# Perform the checks in the context of a single file/folder
+else {
+    # Collect and process performance data unless told otherwise
+    if (!$o_no_data) {
+        $PERF_DATA{$o_filepath} = getPerformanceDataForProperty(
+            $warning_value, $warning_uom,
+            $critical_value, $critical_uom,
+            \@fileStat
+        );
+    }
+
+    if ($o_critical and my $output = checkFilePropertyValue($critical_value, $critical_uom, \@fileStat)) {
+        showOutputAndExit($output,'CRITICAL');
+    }
+    if ($o_warning and my $output = checkFilePropertyValue($warning_value, $warning_uom, \@fileStat)) {
+        showOutputAndExit($output,'WARNING');
+    }
+
+    if ($o_warning_match || $o_critical_match) {
+        my ($output, $check_state) = checkFileContents(
+            $smb,
+            $full_file_path,
+            $o_warning_match,
+            $o_critical_match
+        );
+        showOutputAndExit($output, $check_state) if ($output);
+    }
+    $final_ok_message = "File/Directory found. ($o_filepath)";
 }
 
 # If we made it this far then everything is OK...
-$ERROR_STATE = 'OK';
-showOutputAndExit("file/directory found. ($full_file_path)");
+showOutputAndExit($final_ok_message,'OK');
