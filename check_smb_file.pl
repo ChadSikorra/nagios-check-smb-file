@@ -23,7 +23,7 @@ use Getopt::Long;
 #####################################################################################
 ### Variable Declarations
 #####################################################################################
-my $VERSION    = '0.5';
+my $VERSION    = '0.5.1';
 my $START_TIME = time();
 
 #------------------------------------------------------------------------------------
@@ -533,12 +533,14 @@ if ($o_filename_match || $o_mode_directory) {
         showOutputAndExit("$! ($full_file_path)",'CRITICAL');
     }
     foreach my $filename ($smb->readdir($fd)) {
+        my $full_filename = "$full_file_path/$filename";
         if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
-            my $full_filename = "$full_file_path/$filename";
             $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
         }
         elsif (($o_filename_match and $o_match_case) and $filename =~ m/$o_filename_match/) {
-            my $full_filename = "$full_file_path/$filename";
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (!$o_filename_match and $o_mode_directory) {
             $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
         }
     }
