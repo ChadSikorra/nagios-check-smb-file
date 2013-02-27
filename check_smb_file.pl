@@ -139,6 +139,7 @@ This plugin tests the existence/age/size/contents of a file/folder on a SMB shar
     -t, --warning-files   <value>       Warning if the total files detected exceeds value
     -T, --critical-files  <value>       Critical if the total files detected exceeds value
     -p, --property        <property>    The property to test (Default: modified)
+    -e, --expand-datetime               Expand DateTime variables used in file paths 
     -K, --kerberos                      Use Kerberos for authentication
     -U, --username        <username>    The username to connect with
     -P, --password        <password>    The password to authenticate with
@@ -208,6 +209,10 @@ Examples
 
     $0 -H fileserver -U username -P password -W domainname -f 'Share/log/file.txt' \\
         --critical-match "^error"
+
+    Check for a file using DateTime variables. They will expand to the values they represent.
+
+    $0 -H fileserver -U username -P password -W domainname -f 'C\$\$/AppLogs/%m%d.log' -e
 EOT
 }
 
