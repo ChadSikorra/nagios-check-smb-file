@@ -465,7 +465,7 @@ if ($o_critical and $o_warning) {
         usage("The warning value must be less than the critical value\n"); 
     }
 }
-if (($o_critical_files || $o_warning_files) and (!$o_filename_match || !$o_mode_directory)) {
+if (($o_critical_files || $o_warning_files) and (!$o_filename_match and !$o_mode_directory)) {
     usage("Checking for total files requires --filename-match --mode-directory\n"); 
 }
 if ($o_critical_files and $o_warning_files) {
